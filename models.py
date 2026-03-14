@@ -4,7 +4,7 @@ import torch.optim as optim
 from tqdm import trange
 
 
-dtype = torch.float32
+dtype = torch.float16
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 class FNN(nn.Module):

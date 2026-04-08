@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import TensorDataset, DataLoader
 from tqdm import trange
 
 
@@ -144,15 +143,15 @@ class ModelDiscovery(FNN):
         y_train = y_train.unsqueeze(1) if len(y_train.shape) == 1 else y_train
         assert y_train.shape[1] == 1, "y_train should have only 1 column"
 
-        y_val = y_val.unsqueeze(1) if len(y_val.shape) == 1 else y_val
-        assert y_val.shape[1] == 1, "y_val should have only 1 column"
-
         optimizer = optim.Adam(self.parameters(), lr=lr)  # Using Adam optimizer. parameters is hereded from nn.Module
+
         if track_loss:
             loss_history = []
             val_loss = []
+            y_val = y_val.unsqueeze(1) if len(y_val.shape) == 1 else y_val
+            assert y_val.shape[1] == 1, "y_val should have only 1 column"
 
-        # ---- Create DataLoader for batch training ----
+        # ---- Create batch training ----
         # Consider DataLoader if we want to shuffle the data every epoch
         batch = torch.randperm(xt_train.size(0))[:batch_size]
         xt_train, y_train = xt_train[batch], y_train[batch]
@@ -165,7 +164,7 @@ class ModelDiscovery(FNN):
                 for param_group in optimizer.param_groups:
                     param_group['lr'] = lr_change[1]
 
-            self.train()  # Set the model to training model
+            self.train()  # Set the model to training mode
             optimizer.zero_grad()
             loss = self.model_loss(xt_train, y_train, lam_pde, lam_mse)
             loss.backward()

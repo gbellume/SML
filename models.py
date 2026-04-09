@@ -110,10 +110,10 @@ class PINN(FNN):
 class ModelDiscovery(FNN):
     def __init__(self, layers, activation=nn.Tanh):
         """
-        In Model discovery f_theta is a function of both x and t, therefore make sure the input
-        dimension considers also the time variable.
+        In Model discovery f_theta is a function of both x and t, therefore make sure that the input
+        dimensions considers also the time variable. Thus input should be of the form [t, x] and not just x.
 
-        Bare in Mind that usually xt[:,0] is the timevariable, the spatial variable is xt[:,1]
+        Bear in Mind that usually xt[:,0] is the timevariable, the spatial variable is xt[:,1]
         """
         super().__init__(layers, activation)
         # self.A = nn.Parameter(torch.tensor(1, dtype=dtype, device=device, requires_grad=True))

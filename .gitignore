@@ -1,0 +1,37 @@
+# Generated data and model artifacts (regenerable, large)
+data/
+dataset/
+*.pt
+*.ckpt
+*.pkl
+
+# Generated plots and animations from coursework runs
+*.gif
+*.mp4
+loss_curve.png
+eval_*.png
+eval_*.gif
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE / tooling
+.claude/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,50 @@
+# Data (regenerable, ~10 GB per dataset, NEVER commit)
+data/
+data_*/
+dataset/
+
+# Results (regenerable from training, hundreds of MB per run)
+results/
+results_*/
+high_freq_results*/
+tmp_*/
+
+# Model checkpoints and large binary outputs
+*.pt
+*.ckpt
+*.pkl
+!**/normalization_state.pkl
+
+# Generated images / videos / plots
+*.gif
+*.mp4
+loss_curve.png
+eval_*.png
+eval_*.gif
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+
+# IDE / tooling
+.claude/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Session-specific files
+PROMPT.md

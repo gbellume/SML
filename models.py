@@ -4,7 +4,7 @@ import torch.optim as optim
 from tqdm import trange
 
 # float64 is better for FNOs. Change to 32 for faster training with other models
-dtype = torch.float32
+dtype = torch.float64
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 """
@@ -201,21 +201,24 @@ class ModelDiscovery(FNN):
             return train_losses, val_losses if validation_data is not None else train_losses
 
 class FNO(nn.Module):
-    def __init__(self, modes, latent_width):
+    def __init__(self, modes, latent_width, activation=nn.GELU):
         super().__init__()
 
         self.modes = modes
         self.latent_width = latent_width
+        self.activation = activation()
+        scale = 1 / (self.latent_width)
 
         self.enc = nn.Linear(1, self.latent_width, dtype=dtype, device=device)
 
         self.weights = nn.Parameter(
             (
-                torch.randn(self.latent_width, self.latent_width, self.modes, device=device)
-                + 1j * torch.randn(self.latent_width, self.latent_width, self.modes, device=device)
+                scale * torch.randn(self.latent_width, self.latent_width, self.modes, device=device)
+                + scale * 1j * torch.randn(self.latent_width, self.latent_width, self.modes, device=device)
             ).to(torch.complex128)
         )
 
+        self.local_term = nn.Linear(self.latent_width, self.latent_width, dtype=dtype, device=device)
         self.dec = nn.Linear(self.latent_width, 1, dtype=dtype, device=device)
 
     def fix_dim(self, t):
@@ -253,13 +256,15 @@ class FNO(nn.Module):
         """
 
         x_enc = self.enc(x)
+
+        # --- Convolution in Fourier space ---
         x_ft = torch.fft.rfft(x_enc, dim=1)
-
         # Out-of-place frequency update to keep autograd graph valid.
-        x_ft_low = torch.einsum("bmn, ndm -> bmd", x_ft[:, :self.modes, :], self.weights)
-        x_ft = torch.cat((x_ft_low, x_ft[:, self.modes:, :]), dim=1)
-
+        x_ft_low = x_ft[:, :self.modes, :]
+        x_ft[:,:self.modes, :] = torch.einsum("bmn, ndm -> bmd", x_ft_low, self.weights)
         x_ift = torch.fft.irfft(x_ft, n=x_enc.shape[1], dim=1)
+
+        # x_new = self.activation(self.local_term(x_enc) + x_ift)
         x_dec = self.dec(x_ift)
 
         return x_dec

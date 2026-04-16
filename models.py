@@ -31,12 +31,19 @@ class FNN(nn.Module):
     def predict(self, x):
         self.eval()
         with torch.no_grad():
-            return self.forward(x)
+            return self.forward(x.to(device))
     
     def loss_fn(self, pred, target):
         return torch.mean((pred - target) ** 2)
     
     def train_model(self, x_train, y_train, epochs=1000, lr=1e-3, track_loss=False, x_val=None, y_val=None, lr_change=None):
+        x_train = x_train.to(device)
+        y_train = y_train.to(device)
+        if x_val is not None:
+            x_val = x_val.to(device)
+        if y_val is not None:
+            y_val = y_val.to(device)
+
         optimizer = optim.Adam(self.parameters(), lr=lr)  # Using Adam optimizer. parameters is hereded from nn.Module
         if track_loss:
             loss_history = []
@@ -85,12 +92,17 @@ class PINN(FNN):
     def train_model(self, x_train, y_train, epochs=1000, lr=1e-3, target_physics=None, lambda_phy=0.1, lambda_data=0.9, 
                     loss_tracking=False, validation_data=None, lr_scheduler=None):
         
+        x_train = x_train.to(device)
+        y_train = y_train.to(device)
+
         optimizer = optim.Adam(self.parameters(), lr=lr)  # Using Adam optimizer. parameters is hereded from nn.Module
         if loss_tracking:
             train_losses = []
             if validation_data is not None:
-               val_losses = []
                x_val, y_val = validation_data
+               x_val = x_val.to(device)
+               y_val = y_val.to(device)
+               val_losses = []
         epochs = trange(epochs, desc="Training Epoch: ")
         for epoch in epochs:
             # Check if is time to change learning rate
@@ -150,12 +162,17 @@ class ModelDiscovery(FNN):
     def train_model(self, xt_train, y_train, epochs=1000, lr=1e-3, batch_size=256, lam_pde=0.5, lam_mse=0.5,
                     validation_data=None, loss_tracking=False, lr_scheduler=None):
         
+        xt_train = xt_train.to(device)
+        y_train = y_train.to(device)
+
         # ---- Safety Check ----
         y_train = y_train.unsqueeze(1) if len(y_train.shape) == 1 else y_train
         assert y_train.shape[1] == 1, "y_train should have only 1 column"
 
         if validation_data is not None:
             xt_val, y_val = validation_data
+            xt_val = xt_val.to(device)
+            y_val = y_val.to(device)
             y_val = y_val.unsqueeze(1) if len(y_val.shape) == 1 else y_val
             assert y_val.shape[1] == 1, "y_val should have only 1 column"
 
@@ -201,68 +218,98 @@ class ModelDiscovery(FNN):
             return train_losses, val_losses if validation_data is not None else train_losses
 
 class FNO(nn.Module):
-    def __init__(self, modes, latent_width):
+    def __init__(self, modes, latent_width, in_channels=1, out_channels=1, n_layers=4):
         super().__init__()
 
         self.modes = modes
         self.latent_width = latent_width
+        self.in_channels = in_channels # just to generalize, not only 1 input
+        self.out_channels = out_channels # just to generalize, not only 1 output
+        self.n_layers = n_layers
 
-        self.enc = nn.Linear(1, self.latent_width, dtype=dtype, device=device)
+        cdtype = torch.complex64 if dtype == torch.float32 else torch.complex128
 
-        self.weights = nn.Parameter(
-            (
-                torch.randn(self.latent_width, self.latent_width, self.modes, device=device)
-                + 1j * torch.randn(self.latent_width, self.latent_width, self.modes, device=device)
-            ).to(torch.complex128)
-        )
+        # Lifting: in_channels -> latent_width
+        self.enc = nn.Linear(self.in_channels, self.latent_width, dtype=dtype, device=device)
 
-        self.dec = nn.Linear(self.latent_width, 1, dtype=dtype, device=device)
+        # Stacked Fourier layers: each has spectral weights + pointwise skip
+        self.spectral_weights = nn.ParameterList([
+            nn.Parameter(
+                (
+                    torch.randn(self.latent_width, self.latent_width, self.modes, device=device)
+                    + 1j * torch.randn(self.latent_width, self.latent_width, self.modes, device=device)
+                ).to(cdtype)
+            )
+            for _ in range(self.n_layers)
+        ])
+        self.pointwise = nn.ModuleList([
+            nn.Linear(self.latent_width, self.latent_width, dtype=dtype, device=device)
+            for _ in range(self.n_layers)
+        ])
+
+        # Projection: latent_width -> out_channels
+        self.dec = nn.Linear(self.latent_width, self.out_channels, dtype=dtype, device=device)
 
     def fix_dim(self, t):
-            if t.dim() == 1:        # (b,)
-                t = t.unsqueeze(0).unsqueeze(-1)   # -> (1, b, 1)
-            elif t.dim() == 2:      # (a, b)
-                t = t.unsqueeze(-1)                # -> (a, b, 1)
-            elif t.dim() == 3:      # already correct
+            if t.dim() == 2:       # (samples, channels) — single sample
+                t = t.unsqueeze(0)                 # -> (1, samples, channels)
+            elif t.dim() == 3:     # already (batch, samples, channels)
                 pass
             else:
                 raise ValueError(
-                    f"Expected tensor with 1, 2, or 3 dims, got {t.dim()}"
+                    f"Expected tensor with 2 or 3 dims, got {t.dim()}"
                 )
             return t
 
     def sanity_check(self, x, y):
-        x = self.fix_dim(x)
-        y = self.fix_dim(y)
+        x = self.fix_dim(x).to(device)
+        y = self.fix_dim(y).to(device)
         assert x.shape[0] == y.shape[0], "Batch size of x and y must match"
         assert x.shape[1] == y.shape[1], "Number of samples in x and y must match"
-        assert x.shape[2] == 1, "Input x must have shape [batch, samples, 1]"
-        assert y.shape[2] == 1, "Output y must have shape [batch, samples, 1]"
+        assert x.shape[2] == self.in_channels, f"Input x must have {self.in_channels} channels, got {x.shape[2]}"
+        assert y.shape[2] == self.out_channels, f"Output y must have {self.out_channels} channels, got {y.shape[2]}"
         assert self.modes <= x.shape[1] // 2 + 1, "Number of modes must be less than or equal to half the number of samples plus one (due to rfft)"
         return x, y
 
     def forward(self, x):
         """
-        Here is described the shape of each tensor used in the forward pass.
-        x:                  [batch (b), samples (s), 1]
-        x_enc:              [b, s, channels_in (n, d)]
-        x_ft:               [b, frequencies, n]
-        weights (conv):     [n, d, modes (m)]
-        x_ift:              [b, s, d]
-        x_dec:              [b, s, 1]
+        x:       [batch (b), samples (s), in_channels]
+        output:  [b, s, out_channels]
+
+        Architecture per Fourier layer:
+            x_out = GELU( spectral_conv(x) + pointwise(x) )
+        The spectral_conv keeps only the lowest `modes` frequencies.
+        The pointwise linear is the local skip connection.
+        Last layer has no activation (feeds into the decoder).
         """
+        n_samples = x.shape[1]
 
-        x_enc = self.enc(x)
-        x_ft = torch.fft.rfft(x_enc, dim=1)
+        # Lifting
+        x_enc = self.enc(x)  # [b, s, latent_width]
 
-        # Out-of-place frequency update to keep autograd graph valid.
-        x_ft_low = torch.einsum("bmn, ndm -> bmd", x_ft[:, :self.modes, :], self.weights)
-        x_ft = torch.cat((x_ft_low, x_ft[:, self.modes:, :]), dim=1)
+        # Stacked Fourier layers
+        for i in range(self.n_layers):
+            # Spectral branch
+            x_ft = torch.fft.rfft(x_enc, dim=1)
+            x_ft_low = torch.einsum(
+                "bmn, ndm -> bmd",
+                x_ft[:, :self.modes, :],
+                self.spectral_weights[i],
+            )
+            x_ft_out = torch.zeros_like(x_ft)
+            x_ft_out[:, :self.modes, :] = x_ft_low
+            x_spectral = torch.fft.irfft(x_ft_out, n=n_samples, dim=1)
 
-        x_ift = torch.fft.irfft(x_ft, n=x_enc.shape[1], dim=1)
-        x_dec = self.dec(x_ift)
+            # Pointwise skip branch
+            x_local = self.pointwise[i](x)
 
-        return x_dec
+            # Combine + activate (no activation on last layer)
+            x = x_spectral + x_local
+            if i < self.n_layers - 1:
+                x = torch.nn.functional.gelu(x)
+
+        # Projection
+        return self.dec(x)
 
     def loss(self, gt, pred):
         return torch.mean(torch.mean((gt - pred) ** 2, dim=(1,2)))
@@ -270,10 +317,10 @@ class FNO(nn.Module):
     def train_model(self, x_train, y_train, epochs=1000, lr=1e-3, validation_data=None, loss_tracking=False, lr_scheduler=None):
         """
         Trains the model on the provided training data.
-        Accepts training inputs with shape (b,), (a, b), or (a, b, c), where:
-        - b is the number of samples (e.g., time steps)
+        Accepts training inputs with shape (a, b, c) where:
         - a is the batch size
-        - c is the number of input channels (must be 1 for this model)
+        - b is the number of samples (e.g., arc points)
+        - c is the number of input/output channels
         """
         
         x_train, y_train = self.sanity_check(x_train, y_train)
@@ -313,12 +360,11 @@ class FNO(nn.Module):
     def predict(self, x):
         """
         Predict the output for a given input x.
-        Accepts inputs with shape (b,), (a, b), or (a, b, c), where:
-        - b is the number of samples (e.g., time steps)
-        - a is the batch size
-        - c is the number of input channels (must be 1 for this model)
+        Accepts inputs with shape (b, c) or (a, b, c) where:
+        - b is the number of samples
+        - c is the number of input channels
         """
-        x = self.fix_dim(x)
+        x = self.fix_dim(x).to(device)
         with torch.no_grad():
             prediction = self.forward(x)
-            return prediction.squeeze(-1).squeeze(0) if prediction.shape[0] == 1 else prediction.squeeze(-1)
+            return prediction.squeeze(0) if prediction.shape[0] == 1 else prediction

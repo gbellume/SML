@@ -7,6 +7,7 @@ Contains only the functions required for:
   - SOI crossing detection
   - Perturbed trajectory propagation (with optional RSW empirical acceleration)
   - Variational equations propagation (for sensitivity matrix computation)
+  - Transfer angle computation and filtering
 
 All configurable parameters are defined at the top of this file.
 No external helper files are required.
@@ -32,7 +33,7 @@ global_frame_orientation = "ECLIPJ2000"
 # Integration step size [s].
 # For 1000 sub-arcs over ~116 days the arc length is ~10 000 s.
 # A 100 s step gives ~100 RK4 steps per arc — accurate and stable.
-fixed_step_size = 10.0
+fixed_step_size = 500.0
 
 
 ###########################################################################
@@ -345,9 +346,19 @@ def get_perturbed_propagator_settings(
     acceleration_models = propagation_setup.create_acceleration_models(
         bodies, acceleration_settings, bodies_to_propagate, central_bodies
     )
-    integrator_settings = propagation_setup.integrator.runge_kutta_fixed_step(
+    step_size_validation_settings = propagation_setup.integrator.step_size_validation(minimum_step = 1e-12, maximum_step=np.infty, accept_infinity_step = True)
+    step_size_control_settings = propagation_setup.integrator.step_size_control_elementwise_scalar_tolerance(
+        absolute_error_tolerance=1e-12, relative_error_tolerance=1e-8
+    )
+
+
+
+    
+    integrator_settings = propagation_setup.integrator.runge_kutta_variable_step(
         fixed_step_size,
-        coefficient_set=propagation_setup.integrator.CoefficientSets.rk_4,
+        coefficient_set=propagation_setup.integrator.rkf_78,
+        step_size_control_settings = step_size_control_settings,
+        step_size_validation_settings = step_size_validation_settings,
     )
 
     propagator_settings = propagation_setup.propagator.translational(
@@ -496,3 +507,56 @@ def propagate_variational_equations(
         bodies, propagator_settings, sensitivity_parameters
     )
     return variational_equations_solver
+
+
+###########################################################################
+# TRANSFER ANGLE
+###########################################################################
+
+def transfer_angle(departure_epoch, tof_days, target_body="Mars"):
+    """
+    Compute the transfer angle between Earth at departure and the target
+    body at arrival.
+
+    Parameters
+    ----------
+    departure_epoch : float     seconds since J2000
+    tof_days        : float     time of flight [days]
+    target_body     : str
+
+    Returns
+    -------
+    float : transfer angle [degrees]
+    """
+    arrival_epoch = departure_epoch + tof_days * 86400.0
+    r1 = spice.get_body_cartesian_position_at_epoch(
+        "Earth", "Sun", global_frame_orientation, "None", departure_epoch)
+    r2 = spice.get_body_cartesian_position_at_epoch(
+        target_body, "Sun", global_frame_orientation, "None", arrival_epoch)
+    cos_angle = np.dot(r1, r2) / (np.linalg.norm(r1) * np.linalg.norm(r2))
+    return np.degrees(np.arccos(np.clip(cos_angle, -1.0, 1.0)))
+
+
+def filter_transfers(departure_epochs, tof_days_array, min_angle=30.0, target_body="Mars"):
+    """
+    Filter departure/TOF pairs by transfer angle.
+
+    Parameters
+    ----------
+    departure_epochs : (M,) array    seconds since J2000
+    tof_days_array   : (M,) array    time of flight [days]
+    min_angle        : float         minimum transfer angle [degrees]
+    target_body      : str
+
+    Returns
+    -------
+    deps_filtered : (K,) array
+    tofs_filtered : (K,) array
+    angles        : (K,) array       transfer angles of kept samples [degrees]
+    """
+    angles = np.array([
+        transfer_angle(d, t, target_body)
+        for d, t in zip(departure_epochs, tof_days_array)
+    ])
+    mask = angles > min_angle
+    return departure_epochs[mask], tof_days_array[mask], angles[mask]

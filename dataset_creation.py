@@ -26,8 +26,7 @@ Approach
 
 Files required
 --------------
-earth_mars_transfer_helpers.py  (same directory)
-
+earth_mars_transfer_helpers.py 
 Usage
 -----
     python earth_mars_low_thrust_transfer.py
@@ -51,7 +50,7 @@ from earth_mars_transfer_helpers import *
 #     propagate_variational_equations,
 # )
 
-# Load SPICE kernels (must be called before any ephemeris queries)
+# Load SPICE kernels
 spice.load_standard_kernels()
 
 
@@ -59,7 +58,7 @@ spice.load_standard_kernels()
 # USER-CONFIGURABLE PARAMETERS
 ###########################################################################
 
-# ---- Departure date (calendar) ----
+# ---- Departure date ----
 departure_year   = 2028
 departure_month  = 11
 departure_day    = 15
@@ -76,53 +75,60 @@ max_state_deviation_tolerance = 1.0
 max_iterations_per_arc = 120
 
 # ---- Thrust mode: "continuous" or "impulsive" ----
-# continuous: piecewise-constant RSW empirical acceleration per arc
-#             control matrix = sensitivity matrix S (6x3)
-# impulsive:  delta-v applied at the start of each arc
-#             control matrix = Phi[:, 3:6] from STM (6x3)
-thrust_mode = "impulsive"
 
+thrust_mode = "continuous"
 
+# impulsive for 500 arcs Total delta-v          : 3.5628e+01 m/s
+# continuous for 500 arcs Total delta-v         : 4.4170e+02 m/s
+# impulsive for 100 arcs Total delta-v          : 3.4339e+01 m/s
+# continuous for 100 arcs Total delta-v          : 1.0271e+03 m/s
+# impulsive for 10 arcs with fixed_step_size=500 s Total delta-v          : 3.2839e+01 m/s
+# continuous for 10 arcs with fixed_step_size=500 s Total delta-v          : 4.5315e+02 m/s
+# impulsive for 3 arcs Total delta-v          : 3.2560e+01 m/s
+
+downsample_factor = None
+ 
+ 
 ###########################################################################
-# DERIVED EPOCHS  (seconds since J2000, TDB approximation)
-
-
+# DERIVED EPOCHS  (seconds since J2000)
+ 
+ 
 _j2000_dt = datetime(2000, 1, 1, 12, 0, 0)          # J2000 reference
 _dep_dt   = datetime(departure_year, departure_month, departure_day,
                      departure_hour, departure_minute, 0)
-
+ 
 departure_epoch = (_dep_dt - _j2000_dt).total_seconds()
 time_of_flight  = time_of_flight_days * constants.JULIAN_DAY   # JULIAN_DAY = 86400 s
 arrival_epoch   = departure_epoch + time_of_flight
-
+ 
 print(f"Departure epoch : {departure_epoch/constants.JULIAN_DAY:.4f} JD from J2000  "
       f"({_dep_dt.strftime('%Y-%m-%d %H:%M')})")
 print(f"Arrival epoch   : {arrival_epoch/constants.JULIAN_DAY:.4f} JD from J2000")
 print(f"Time of flight  : {time_of_flight_days} days")
-
-
+ 
+ 
 if __name__ == "__main__":
-
+ 
     print("EARTH-MARS LOW-THRUST TRANSFER VIA LAMBERT ARC SUBDIVISION")
     print(f"Thrust mode: {thrust_mode}")
     print("-" * 70)
-
+ 
     # -----------------------------------------------------------------
     # 1. Create body system and solve Lambert problem
     # -----------------------------------------------------------------
     bodies = create_simulation_bodies()
-
+ 
     lambert_arc_ephemeris = get_lambert_problem_result(
         bodies, target_body, departure_epoch, arrival_epoch
     )
-
+ 
     dep_state = lambert_arc_ephemeris.cartesian_state(departure_epoch)
     arr_state = lambert_arc_ephemeris.cartesian_state(arrival_epoch)
     print(f"\nLambert departure |r| : {np.linalg.norm(dep_state[0:3])/1e9:.4f} Gm")
     print(f"Lambert arrival   |r| : {np.linalg.norm(arr_state[0:3])/1e9:.4f} Gm")
     print(f"Lambert departure |v| : {np.linalg.norm(dep_state[3:6])/1e3:.4f} km/s")
     print(f"Lambert arrival   |v| : {np.linalg.norm(arr_state[3:6])/1e3:.4f} km/s")
-
+ 
     # -----------------------------------------------------------------
     # 2. Trim to SOI-exit -> SOI-entry
     # -----------------------------------------------------------------
@@ -132,28 +138,28 @@ if __name__ == "__main__":
         lambert_arc_ephemeris, bodies,
         departure_epoch, "Earth", target_body, arrival_epoch,
     )
-
+ 
     print(f"\nSOI departure : {soi_dep_epoch/constants.JULIAN_DAY:.4f} JD from J2000")
     print(f"SOI arrival   : {soi_arr_epoch/constants.JULIAN_DAY:.4f} JD from J2000")
     print(f"SOI-to-SOI TOF: {soi_tof/constants.JULIAN_DAY:.4f} days "
           f"({soi_tof:.0f} s)")
-
+ 
     # -----------------------------------------------------------------
     # 3. Define sub-arc boundaries
-
+ 
     arc_length = soi_tof / number_of_arcs
     arc_epochs = np.linspace(soi_dep_epoch, soi_arr_epoch, number_of_arcs + 1)
-
+ 
     print(f"\nNumber of arcs : {number_of_arcs}")
     print(f"Arc length     : {arc_length:.2f} s  ({arc_length/3600:.2f} h)")
-
+ 
     # Quick sanity check against integration step size
     steps_per_arc = arc_length / fixed_step_size
     print(f"RK4 steps/arc  : ~{steps_per_arc:.1f}  (step size = {fixed_step_size} s)")
     if steps_per_arc < 5:
         print("  *** WARNING: fewer than 5 integration steps per arc. "
               "Consider reducing fixed_step_size in the helpers file. ***")
-
+ 
     # -----------------------------------------------------------------
     # 4. Allocate storage
     # -----------------------------------------------------------------
@@ -172,16 +178,16 @@ if __name__ == "__main__":
     print(f"\n{'-'*70}")
     print("Starting arc-by-arc thrust computation …")
     print(f"{'-'*70}\n")
-
+ 
     t_loop_start = time_module.time()
-
+ 
     for arc_idx in range(number_of_arcs):
-
+ 
         t0 = arc_epochs[arc_idx]
         tf = arc_epochs[arc_idx + 1]
-
+ 
         termination_settings = propagation_setup.propagator.time_termination(tf)
-
+ 
         # ---- 5a. Propagate variational equations ----
         #
         # continuous: with RSW enabled (p=0) → sensitivity matrix S (6x3)
@@ -200,10 +206,10 @@ if __name__ == "__main__":
             state_hist       = variational_solver.state_history
             lambert_hist     = get_lambert_arc_history(lambert_arc_ephemeris, state_hist)
             final_epoch      = list(sensitivity_hist.keys())[-1]
-
+ 
             # S_full : 6x3  (maps RSW acceleration -> 6-D state deviation)
             control_matrix = sensitivity_hist[final_epoch]
-
+ 
         else:  # impulsive
             variational_solver = propagate_variational_equations(
                 t0,
@@ -217,26 +223,26 @@ if __name__ == "__main__":
             state_hist  = variational_solver.state_history
             lambert_hist = get_lambert_arc_history(lambert_arc_ephemeris, state_hist)
             final_epoch = list(stm_hist.keys())[-1]
-
+ 
             # Phi_v : 6x3  (maps delta-v at t0 -> 6-D state deviation at tf)
             control_matrix = stm_hist[final_epoch][:, 3:6]
-
+ 
         # 6-D state deviation without any correction
         delta_x = state_hist[final_epoch] - lambert_hist[final_epoch]
-
+ 
         # ---- 5b. Least-squares initial guess ----
         #
         # continuous: min_p ||S p + dx||^2
         # impulsive:  min_dv ||Phi_v dv + dx||^2
         #
         correction, _, _, _ = np.linalg.lstsq(control_matrix, -delta_x, rcond=None)
-
+ 
         # ---- 5c. Iterative Gauss-Newton correction ----
         it = 0
-
+ 
         while True:
             it += 1
-
+ 
             if thrust_mode == "continuous":
                 sim = propagate_trajectory(
                     t0,
@@ -257,31 +263,31 @@ if __name__ == "__main__":
                     initial_state_correction=current_state_correction + impulse_correction,
                     use_rsw_acceleration=False,
                 )
-
+ 
             sh = sim.propagation_results.state_history
             lh = get_lambert_arc_history(lambert_arc_ephemeris, sh)
             sh_arr = np.vstack(list(sh.values()))
             lh_arr = np.vstack(list(lh.values()))
-
+ 
             delta_x_new = sh_arr[-1, :] - lh_arr[-1, :]
             state_dev = np.linalg.norm(delta_x_new)
-
+ 
             if state_dev <= max_state_deviation_tolerance:
                 break
             if it >= max_iterations_per_arc:
                 break
-
+ 
             # Gauss-Newton update
             dp, _, _, _ = np.linalg.lstsq(control_matrix, -delta_x_new, rcond=None)
             correction = correction + dp
-
+ 
         # ---- 5d. Store results ----
         correction_history[arc_idx, :] = correction
         final_state_deviation_norm[arc_idx] = state_dev
         final_pos_deviation_norm[arc_idx] = np.linalg.norm(delta_x_new[0:3])
         final_vel_deviation_norm[arc_idx] = np.linalg.norm(delta_x_new[3:6])
         iterations_per_arc[arc_idx] = it
-
+ 
         current_state_correction = delta_x_new.copy()
         # ---- Progress report ----
         if arc_idx == 0 or (arc_idx + 1) % 5 == 0:
@@ -296,18 +302,18 @@ if __name__ == "__main__":
                 f"iters={it}  "
                 f"~{t_remaining/60:.1f} min left"
             )
-
+ 
     total_time = time_module.time() - t_loop_start
-
+ 
     # -----------------------------------------------------------------
     # 6. Summary
     # -----------------------------------------------------------------
     n_converged = int(np.sum(final_state_deviation_norm <= max_state_deviation_tolerance))
     correction_norms = np.linalg.norm(correction_history, axis=1)
-
+ 
     corr_label = "RSW accel" if thrust_mode == "continuous" else "delta-v"
     corr_unit  = "m/s^2" if thrust_mode == "continuous" else "m/s"
-
+ 
     print(f"\n{'='*70}")
     print("RESULTS SUMMARY")
     print(f"{'='*70}")
@@ -324,12 +330,15 @@ if __name__ == "__main__":
     print(f"Mean |{corr_label}|       : {np.mean(correction_norms):.4e} {corr_unit}")
     if thrust_mode == "impulsive":
         print(f"Total delta-v          : {np.sum(correction_norms):.4e} m/s")
-
+    else:
+        total_dv = np.sum(correction_norms) * arc_length
+        print(f"Total delta-v          : {total_dv:.4e} m/s")
+ 
     # -----------------------------------------------------------------
     # 7. Plots
     # -----------------------------------------------------------------
     time_days = (arc_midpoint_epochs - soi_dep_epoch) / constants.JULIAN_DAY
-
+ 
     if thrust_mode == "continuous":
         comp_labels = ["R  (radial)", "S  (along-track)", "W  (cross-track)"]
         y_unit = "m/s$^2$"
@@ -338,10 +347,10 @@ if __name__ == "__main__":
         comp_labels = ["$\\Delta v_x$", "$\\Delta v_y$", "$\\Delta v_z$"]
         y_unit = "m/s"
         suptitle = f"Impulsive $\\Delta v$ profile  ({number_of_arcs} arcs)"
-
+ 
     # ---- 7a. Correction components vs time ----
     fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
-
+ 
     for k, ax in enumerate(axes):
         ax.step(time_days, correction_history[:, k],
                 where="mid", linewidth=0.6)
@@ -349,12 +358,12 @@ if __name__ == "__main__":
         ax.set_title(f"{comp_labels[k]} component", fontsize=13)
         ax.grid(True, alpha=0.3)
         ax.tick_params(labelsize=11)
-
+ 
     axes[-1].set_xlabel("Time since SOI departure  [days]", fontsize=12)
     fig.suptitle(suptitle, fontsize=15, y=1.01)
     plt.tight_layout()
     plt.show()
-
+ 
     # ---- 7b. Correction magnitude vs time ----
     fig, ax = plt.subplots(figsize=(12, 5))
     ax.step(time_days, correction_norms, where="mid",
@@ -367,10 +376,10 @@ if __name__ == "__main__":
     ax.tick_params(labelsize=11)
     plt.tight_layout()
     plt.show()
-
+ 
     # ---- 7c. State / position / velocity deviations at arc endpoints ----
     fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
-
+ 
     axes[0].semilogy(time_days, final_state_deviation_norm,
                      linewidth=0.5, color="tab:blue")
     axes[0].axhline(max_state_deviation_tolerance,
@@ -379,25 +388,25 @@ if __name__ == "__main__":
     axes[0].set_title("6-D state deviation norm (mixed units)", fontsize=13)
     axes[0].legend(fontsize=11)
     axes[0].grid(True, alpha=0.3)
-
+ 
     axes[1].semilogy(time_days, final_pos_deviation_norm,
                      linewidth=0.5, color="tab:green")
     axes[1].set_ylabel("$\\|\\delta\\mathbf{r}\\|$  [m]", fontsize=12)
     axes[1].set_title("Position deviation norm", fontsize=13)
     axes[1].grid(True, alpha=0.3)
-
+ 
     axes[2].semilogy(time_days, final_vel_deviation_norm,
                      linewidth=0.5, color="tab:orange")
     axes[2].set_ylabel("$\\|\\delta\\mathbf{v}\\|$  [m/s]", fontsize=12)
     axes[2].set_title("Velocity deviation norm", fontsize=13)
     axes[2].grid(True, alpha=0.3)
-
+ 
     for ax in axes:
         ax.tick_params(labelsize=11)
     axes[-1].set_xlabel("Time since SOI departure  [days]", fontsize=12)
     plt.tight_layout()
     plt.show()
-
+ 
     # ---- 7d. Iterations per arc ----
     fig, ax = plt.subplots(figsize=(12, 4))
     ax.bar(range(number_of_arcs), iterations_per_arc,
@@ -409,3 +418,146 @@ if __name__ == "__main__":
     ax.tick_params(labelsize=11)
     plt.tight_layout()
     plt.show()
+ 
+    # =================================================================
+    # 8. DOWNSAMPLED CORRECTION SIMULATION
+    # =================================================================
+    # Re-propagate the full trajectory using only every Nth correction
+    # from the solved correction_history.
+    #
+    # impulsive:  Dv applied only at kept arcs; coast in between.
+    # continuous: RSW acceleration from each kept arc is held constant
+    #             for the next downsample_factor arcs until the next
+    #             kept arc replaces it.
+    # =================================================================
+ 
+    if downsample_factor is not None:
+ 
+        n_kept = len(range(0, number_of_arcs, downsample_factor))
+        kept_norms = np.linalg.norm(
+            correction_history[::downsample_factor, :], axis=1)
+ 
+        if thrust_mode == "impulsive":
+            kept_dv = np.sum(kept_norms)
+            ds_label = "impulses"
+        else:
+            kept_dv = np.sum(kept_norms) * arc_length * downsample_factor
+            ds_label = "thrust segments"
+ 
+        print(f"\n{'='*70}")
+        print(f"DOWNSAMPLED SIMULATION  (keep every {downsample_factor}th correction)")
+        print(f"{'='*70}")
+        print(f"Corrections applied : {n_kept} / {number_of_arcs}")
+        print(f"Delta-v budget      : {kept_dv:.4e} m/s")
+ 
+        ds_state_correction = np.zeros(6)
+        ds_pos_dev = np.zeros(number_of_arcs)
+        ds_vel_dev = np.zeros(number_of_arcs)
+        ds_state_dev = np.zeros(number_of_arcs)
+ 
+        # For continuous: the currently active RSW acceleration
+        active_rsw = np.zeros(3)
+ 
+        t_ds_start = time_module.time()
+ 
+        for arc_idx in range(number_of_arcs):
+ 
+            t0 = arc_epochs[arc_idx]
+            tf = arc_epochs[arc_idx + 1]
+            termination_settings = propagation_setup.propagator.time_termination(tf)
+ 
+            if thrust_mode == "impulsive":
+                # Apply Dv only at kept arcs; coast otherwise
+                if arc_idx % downsample_factor == 0:
+                    dv = correction_history[arc_idx, :]
+                    impulse = np.concatenate([np.zeros(3), dv])
+                    arc_state_correction = ds_state_correction + impulse
+                else:
+                    arc_state_correction = ds_state_correction
+ 
+                sim = propagate_trajectory(
+                    t0,
+                    termination_settings,
+                    bodies,
+                    lambert_arc_ephemeris,
+                    initial_state_correction=arc_state_correction,
+                    use_rsw_acceleration=False,
+                )
+            else:  # continuous
+                # Latch new RSW acceleration at kept arcs; hold it otherwise
+                if arc_idx % downsample_factor == 0:
+                    active_rsw = correction_history[arc_idx, :].copy()
+ 
+                sim = propagate_trajectory(
+                    t0,
+                    termination_settings,
+                    bodies,
+                    lambert_arc_ephemeris,
+                    initial_state_correction=ds_state_correction,
+                    use_rsw_acceleration=True,
+                    rsw_acceleration_magnitude=active_rsw,
+                )
+ 
+            sh = sim.propagation_results.state_history
+            lh = get_lambert_arc_history(lambert_arc_ephemeris, sh)
+            sh_arr = np.vstack(list(sh.values()))
+            lh_arr = np.vstack(list(lh.values()))
+ 
+            delta_x_end = sh_arr[-1, :] - lh_arr[-1, :]
+            ds_pos_dev[arc_idx]   = np.linalg.norm(delta_x_end[0:3])
+            ds_vel_dev[arc_idx]   = np.linalg.norm(delta_x_end[3:6])
+            ds_state_dev[arc_idx] = np.linalg.norm(delta_x_end)
+ 
+            ds_state_correction = delta_x_end.copy()
+ 
+            if arc_idx == 0 or (arc_idx + 1) % 25 == 0:
+                t_el = time_module.time() - t_ds_start
+                t_rem = t_el / (arc_idx + 1) * (number_of_arcs - arc_idx - 1)
+                if thrust_mode == "impulsive":
+                    tag = "burn" if arc_idx % downsample_factor == 0 else "coast"
+                else:
+                    tag = "new" if arc_idx % downsample_factor == 0 else "hold"
+                print(
+                    f"  [{arc_idx+1:4d}/{number_of_arcs}]  {tag:5s}  "
+                    f"||dr||={ds_pos_dev[arc_idx]:.4e} m  "
+                    f"||dv||={ds_vel_dev[arc_idx]:.4e} m/s  "
+                    f"||dx||={ds_state_dev[arc_idx]:.4e}  "
+                    f"~{t_rem/60:.1f} min left"
+                )
+ 
+        print(f"\nDownsampled final ||dr|| : {ds_pos_dev[-1]:.4e} m")
+        print(f"Downsampled final ||dv|| : {ds_vel_dev[-1]:.4e} m/s")
+        print(f"Downsampled max   ||dr|| : {np.max(ds_pos_dev):.4e} m")
+        print(f"Downsampled max   ||dv|| : {np.max(ds_vel_dev):.4e} m/s")
+ 
+        # ---- Comparison plot: full vs downsampled ----
+        fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+ 
+        axes[0].semilogy(time_days, final_pos_deviation_norm,
+                         linewidth=0.5, color="tab:green", alpha=0.7,
+                         label=f"Full ({number_of_arcs} {ds_label})")
+        axes[0].semilogy(time_days, ds_pos_dev,
+                         linewidth=0.8, color="tab:red",
+                         label=f"Downsampled ({n_kept} {ds_label})")
+        axes[0].set_ylabel("$\\|\\delta\\mathbf{r}\\|$  [m]", fontsize=12)
+        axes[0].set_title("Position deviation: full vs downsampled", fontsize=13)
+        axes[0].legend(fontsize=11)
+        axes[0].grid(True, alpha=0.3)
+ 
+        axes[1].semilogy(time_days, final_vel_deviation_norm,
+                         linewidth=0.5, color="tab:green", alpha=0.7,
+                         label=f"Full ({number_of_arcs} {ds_label})")
+        axes[1].semilogy(time_days, ds_vel_dev,
+                         linewidth=0.8, color="tab:red",
+                         label=f"Downsampled ({n_kept} {ds_label})")
+        axes[1].set_ylabel("$\\|\\delta\\mathbf{v}\\|$  [m/s]", fontsize=12)
+        axes[1].set_title("Velocity deviation: full vs downsampled", fontsize=13)
+        axes[1].legend(fontsize=11)
+        axes[1].grid(True, alpha=0.3)
+ 
+        for ax in axes:
+            ax.tick_params(labelsize=11)
+        axes[-1].set_xlabel("Time since SOI departure  [days]", fontsize=12)
+        plt.tight_layout()
+        plt.show()
+ 
